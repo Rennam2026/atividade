@@ -1,0 +1,12 @@
+-- Aula: relacionamentos 1:N. Um departamento possui várias categorias.
+CREATE TABLE IF NOT EXISTS roles (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name VARCHAR(30) UNIQUE NOT NULL);
+CREATE TABLE IF NOT EXISTS users (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name VARCHAR(120) NOT NULL, email VARCHAR(254) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, role_id INTEGER NOT NULL REFERENCES roles(id), active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS departments (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name VARCHAR(100) NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS categories (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE RESTRICT, name VARCHAR(100) NOT NULL, UNIQUE(department_id,name), UNIQUE(id,department_id));
+CREATE TABLE IF NOT EXISTS products (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name VARCHAR(180) NOT NULL, sku VARCHAR(60) NOT NULL UNIQUE, description TEXT, price NUMERIC(12,2) NOT NULL CHECK(price >= 0), stock INTEGER NOT NULL DEFAULT 0 CHECK(stock >= 0), department_id INTEGER NOT NULL REFERENCES departments(id), category_id INTEGER NOT NULL, created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), FOREIGN KEY(category_id,department_id) REFERENCES categories(id,department_id));
+-- Sessão: somente o hash do token fica armazenado; o cookie tem o token original.
+CREATE TABLE IF NOT EXISTS sessions (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash CHAR(64) UNIQUE NOT NULL, expires_at TIMESTAMPTZ NOT NULL);
+CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
+INSERT INTO roles(name) VALUES ('admin'),('gerente'),('operador') ON CONFLICT DO NOTHING;
+INSERT INTO departments(name) VALUES ('Informática'),('Papelaria'),('Limpeza') ON CONFLICT DO NOTHING;
+INSERT INTO categories(department_id,name) SELECT d.id,x.name FROM (VALUES ('Informática','Periféricos'),('Informática','Computadores'),('Papelaria','Cadernos'),('Limpeza','Higiene')) x(department, name) JOIN departments d ON d.name=x.department ON CONFLICT DO NOTHING;
