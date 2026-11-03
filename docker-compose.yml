@@ -1,0 +1,128 @@
+# O Docker Compose descreve como iniciar os contêineres que trabalham juntos neste projeto.
+# A indentação (os espaços no início das linhas) define quais configurações pertencem a cada bloco.
+# Um serviço é uma parte da aplicação: aqui temos banco de dados, API e interface web.
+services:
+  # Nome do serviço do banco. Os outros contêineres podem encontrá-lo pelo endereço "postgres".
+  postgres:
+    # Usa a imagem pronta do PostgreSQL 16 baseada no Alpine, uma distribuição Linux compacta.
+    image: postgres:16-alpine
+    # Variáveis de ambiente passadas ao contêiner; a imagem do PostgreSQL usa estas na inicialização.
+    environment:
+      # Nome do banco inicial. ${VAR:-valor} usa VAR do ambiente ou do .env; se ausente ou vazia, usa valor.
+      POSTGRES_DB: ${POSTGRES_DB:-sistema}
+      # Usuário criado na primeira inicialização. O valor padrão é "sistema".
+      POSTGRES_USER: ${POSTGRES_USER:-sistema}
+      # Senha desse usuário. "sistema_dev" é o padrão para desenvolvimento; em produção, defina outra senha.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sistema_dev}
+    # Montagens conectam arquivos ou volumes do Docker a caminhos dentro do contêiner.
+    volumes:
+      # Guarda os dados em um volume persistente: recriar o contêiner não apaga esse volume.
+      - postgres_data:/var/lib/postgresql/data
+      # Monta o SQL local como somente leitura (:ro). A imagem o executa ao inicializar um banco vazio.
+      # Alterar este arquivo não o executa novamente se o volume já contiver um banco inicializado.
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # Verificação periódica que informa ao Docker se o banco está pronto para aceitar conexões.
+    healthcheck:
+      # CMD-SHELL executa pelo shell; pg_isready verifica a disponibilidade do PostgreSQL.
+      # $$ impede o Compose de expandir a variável: o shell do contêiner lê POSTGRES_USER e POSTGRES_DB.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      # Intervalo configurado entre verificações regulares.
+      interval: 5s
+      # Tempo máximo permitido para cada tentativa antes de considerá-la uma falha.
+      timeout: 30s
+      # Cinco falhas consecutivas contabilizadas fazem o contêiner ser marcado como não saudável.
+      retries: 5
+      # Durante os primeiros 30 segundos, falhas não contam; um sucesso já pode indicar prontidão.
+      start_period: 30s
+    # Conecta o banco à rede compartilhada. A notação entre colchetes representa uma lista YAML.
+    networks: [sistema_network]
+  # Serviço da API PHP, acessível aos outros contêineres pelo nome "backend".
+  backend:
+    # Constrói a imagem usando a pasta ./backend como contexto e o Dockerfile que está nela.
+    build: ./backend
+    # Publica a porta 8080 do contêiner na 8080 do computador, apenas no endereço local 127.0.0.1.
+    ports: ["127.0.0.1:8080:8080"]
+    # Configurações que o código da API recebe para se conectar ao banco.
+    environment:
+      # O nome do serviço resolve para o contêiner do banco dentro da rede do Compose.
+      DB_HOST: postgres
+      # Porta interna padrão do PostgreSQL; a API usa a rede dos contêineres para acessá-la.
+      DB_PORT: 5432
+      # Usa o mesmo nome de banco definido no serviço postgres, com o mesmo valor padrão.
+      DB_NAME: ${POSTGRES_DB:-sistema}
+      # Usa o mesmo usuário definido para o PostgreSQL.
+      DB_USER: ${POSTGRES_USER:-sistema}
+      # Usa a mesma senha definida para o PostgreSQL.
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-sistema_dev}
+    # Declara dependências que precisam estar prontas antes de iniciar este serviço.
+    depends_on:
+      # Indica que o backend depende do serviço chamado postgres.
+      postgres:
+        # Aguarda o healthcheck do banco ter sucesso; apenas iniciar o contêiner não seria suficiente.
+        condition: service_healthy
+    # Montagens usadas durante o desenvolvimento da API.
+    volumes:
+      # Espelha a pasta local backend em /app; alterações locais ficam disponíveis no contêiner.
+      # Esta montagem encobre os arquivos que a imagem já tinha nesse caminho.
+      - ./backend:/app
+    # Verifica se o servidor da API consegue responder a uma requisição local.
+    healthcheck:
+      # CMD executa diretamente o PHP, sem shell; -r executa o código PHP recebido como argumento.
+      # file_get_contents lê /api/health; @ oculta avisos e exit retorna 1 se a leitura falhar, ou 0 se funcionar.
+      # O código 0 indica sucesso ao Docker. Esta verificação não valida o conteúdo da resposta.
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8080/api/health') === false ? 1 : 0);"]
+      # Agenda verificações regulares com intervalo de 5 segundos.
+      interval: 5s
+      # Uma tentativa que demore mais de 5 segundos é considerada falha.
+      timeout: 5s
+      # Marca o serviço como não saudável após dez falhas consecutivas contabilizadas.
+      retries: 10
+    # Permite a comunicação da API com o banco e com o frontend pela rede compartilhada.
+    networks: [sistema_network]
+  # Serviço da interface Next.js, que será aberta no navegador.
+  frontend:
+    # Constrói a imagem com o Dockerfile e os arquivos da pasta ./frontend.
+    build: ./frontend
+    # Publica a porta 3000 do contêiner em http://127.0.0.1:3000 no computador local.
+    ports: ["127.0.0.1:3000:3000"]
+    # Variáveis disponíveis para o processo Node.js dentro do contêiner.
+    environment:
+      # Define o ambiente como desenvolvimento, compatível com o comando npm run dev.
+      NODE_ENV: development
+      # Endereço da API para chamadas feitas dentro da rede Docker; "backend" é o nome do serviço.
+      # Este endereço interno não é um endereço para o navegador do usuário.
+      INTERNAL_API_URL: http://backend:8080
+      # Ativa a consulta periódica de mudanças de arquivos pelo Watchpack, útil em pastas montadas.
+      # As aspas mantêm "true" como texto, o formato esperado para esta variável de ambiente.
+      WATCHPACK_POLLING: "true"
+    # Montagens do código e dos diretórios usados pelo Next.js.
+    volumes:
+      # Disponibiliza o código local em /app para que as edições sejam percebidas no desenvolvimento.
+      - ./frontend:/app
+      # Mantém as dependências em um volume próprio, separado do node_modules do computador.
+      - frontend_node_modules:/app/node_modules
+      # Mantém os arquivos gerados e o cache do Next.js em outro volume próprio.
+      - frontend_next:/app/.next
+    # Define qual serviço deve estar pronto antes de iniciar a interface.
+    depends_on:
+      # A interface depende da API chamada backend.
+      backend:
+        # Aguarda a API passar em sua verificação de saúde antes de iniciar o frontend.
+        condition: service_healthy
+    # Coloca a interface na mesma rede da API e do banco.
+    networks: [sistema_network]
+# Declara os volumes nomeados usados acima; o Docker gerencia onde seus dados ficam armazenados.
+# Eles sobrevivem à remoção dos contêineres, mas podem ser apagados explicitamente, como com down -v.
+volumes:
+  # Volume para os arquivos persistentes do PostgreSQL; a configuração vazia usa as opções padrão.
+  postgres_data:
+  # Volume para as bibliotecas instaladas pelo npm no frontend.
+  frontend_node_modules:
+  # Volume para o diretório .next, com cache e arquivos gerados pelo Next.js.
+  frontend_next:
+# Declara as redes que os serviços podem compartilhar.
+networks:
+  # Nome da rede referenciada em cada serviço deste arquivo.
+  sistema_network:
+    # O driver bridge cria uma rede virtual local ao host Docker para conectar os contêineres.
+    driver: bridge
